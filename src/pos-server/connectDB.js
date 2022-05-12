@@ -1,4 +1,11 @@
 const mongoose = require('mongoose');
+
+const crypto = require('crypto')
+const { v4 } = require('uuid')
+const fs = require('fs')
+
+
+
 peerID = process.argv[2]
 
 // === schema definitions ===
@@ -15,11 +22,15 @@ peerID = process.argv[2]
  *      amount:
  *      spent:
  * }
+ * 
  * amount: amount to transfer
  * rpubKey: receiver public key 
+ * signature: signed by sender (bxtn||rpubKey||amount)
+ * 
+ * --- or ---
+ * 
  * tstamp: from CBDC
  * signature: (bxtn||tstamp) -> signed by cbdc
- * signature2: signed by sender (bxtn||rpubKey||amount)
  * }
  * 
  * only btxn will stored in the txn database
@@ -48,7 +59,8 @@ const TxnSchema = new mongoose.Schema({
     }
 },
     {
-        timestamps: true,
+        timestamps: false,
+        versionKey: false,
     })
 
 const Txn = mongoose.model(`txns${peerID}`, TxnSchema, `txns${peerID}`)
@@ -136,7 +148,8 @@ const BlockChainSchema = new mongoose.Schema({
         }
     ]
 }, {
-    timestamps: true,
+    timestamps: false,
+    versionKey: false
 })
 
 const Chain = mongoose.model(`chain${peerID}`, BlockChainSchema, `chain${peerID}`)
@@ -214,8 +227,9 @@ const addToBlockChainDB = async (block) => {
  * -> txn > is undefined
  */
 const isTxnValidInTxnDB = async (txn) => {
-    const txns = await Txn.find(txn.id)
-    if (txns.length == 1 && txn.spend == true) {
+    const txns = await Txn.find({ id: txn.id, pubKey: txn.pubKey })
+
+    if (txns.length == 1 && txns[0].spent == true) {
         return false
     } else {
         return txns.length == 1 ? true : undefined
@@ -223,14 +237,26 @@ const isTxnValidInTxnDB = async (txn) => {
 }
 
 /**
- * get last block in the blockchain
+ * get last 10 blocks in the blockchain
+ */
+
+const getLast10Blocks = async () => {
+    const last10Blocks = await Chain.find().sort({ id: -1 }).limit(10).select("-_id")
+    return last10Blocks
+}
+
+/**
+ * get last blocks in the blockchain
  */
 
 const getLastBlock = async () => {
-    const lastBlock = await Chain.find().sort({ id: -1 }).limit(1)
-    console.log(`last block received ${lastBlock}`)
+
+    const lastBlock = await Chain.find({}).sort({ id: -1 }).limit(1).select("-_id")
+    console.log(lastBlock)
+
     return lastBlock[0]
 }
+
 
 /**
  * to get blocks from a certain height
@@ -245,8 +271,61 @@ const getBlocksFromH = async (h) => {
  */
 
 const getTxns = async (pubKey) => {
-    const txns = await Txn.find({ pubKey, spent: false })
+    const txns = await Txn.find({ pubKey, spent: false }).select("-_id")
     return txns;
+}
+
+const saveCTxnToP2P = async (txn, nid) => {
+
+    const signature = Buffer.from(txn.signature, 'base64')
+
+    let tst = JSON.stringify(txn.btxn)
+    tst += txn.tstamp
+
+    let data = Buffer.from(tst)
+    const pubKey = fs.readFileSync(`${__dirname}/cbdc_pub.pem`).toString()
+
+    const isValid = crypto.verify('sha256', data, pubKey, signature)
+
+    if (isValid) {
+
+        txn.btxn.origin = `cbdc - ${txn.btxn.id}`
+        txn.btxn.id = nid
+        const ntxn = new Txn();
+
+        for (let i in txn.btxn) {
+            ntxn[i] = txn.btxn[i]
+        }
+
+        ntxn.spent = false
+
+        await ntxn.save()
+    }
+
+}
+
+const txnP2P_TO_C = async (id) => {
+    console.log("inside txnpp2p_to_c")
+
+    const privateKey = fs.readFileSync(`${__dirname}/${peerID}/wallet/privateKey.pem`).toString()
+
+    await Txn.findOneAndUpdate({ id }, { $set: { spent: true } })
+
+    const txn = await Txn.findOne({ id }).select("-_id")
+    console.log(txn)
+
+    let tstamp = Date.now().toString()
+    let sig_msg = JSON.stringify(txn)
+    sig_msg += tstamp
+
+    let signature = crypto.sign('sha256', Buffer.from(sig_msg), privateKey).toString('base64')
+
+    return {
+        btxn: txn,
+        signature,
+        tstamp,
+        id: peerID
+    }
 }
 
 
@@ -260,7 +339,9 @@ module.exports = {
     updateTransDB,
     addToBlockChainDB,
     isTxnValidInTxnDB,
+    getLast10Blocks,
     getLastBlock,
-    getBlocksFromH,
-    getTxns
+    getTxns,
+    saveCTxnToP2P,
+    txnP2P_TO_C
 }

@@ -4,7 +4,10 @@
   "description": "create decentralized cbdc",
   "main": "src/index.js",
   "scripts": {
-    "test": "nodemon src/index.js"
+    "test": "nodemon src/index.js",
+    "start-cbdc": "node src/index.js",
+    "start-peer-network": "powershell -f setupPeers.ps1",
+    "start-rand-txns": "node src/randTxns/createRanTxns.js"
   },
   "keywords": [
     "cbdc",

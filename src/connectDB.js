@@ -1,32 +1,37 @@
+// file for cbdc connection to database
+
 const fs = require('fs');
 const mongoose = require('mongoose');
 const crypto = require('crypto')
+const { v4 } = require('uuid')
 
 
-const TxnSchema = new mongoose.Schema({
-    id: {
-        type: String,
-        required: true
-    },
-    origin: {
-        type: String,
-        required: true
-    },
-    pubKey: {
-        type: String,
-        required: true
-    },
-    amount: {
-        type: Number,
-        required: true
-    },
-    spent: {
-        type: Boolean,
-        required: true
-    }
-},
+const TxnSchema = new mongoose.Schema(
     {
-        timestamps: true,
+        id: {
+            type: String,
+            required: true
+        },
+        origin: {
+            type: String,
+            required: true
+        },
+        pubKey: {
+            type: String,
+            required: true
+        },
+        amount: {
+            type: Number,
+            required: true
+        },
+        spent: {
+            type: Boolean,
+            required: true
+        }
+    },
+    {
+        timestamps: false,
+        versionKey: false,
     })
 
 const Txn = mongoose.model(`txnsCBDC`, TxnSchema, `txnsCBDC`)
@@ -36,7 +41,6 @@ const connectToDB = async () => {
     await mongoose.connect('mongodb+srv://pos_node:pos_node@g0-cluster.4szx0.mongodb.net/pos_bk_db?retryWrites=true&w=majority')
 }
 
-// ! currently only flags the first double spending - txn chain not implemented
 const addTxnsToDB = async (txns) => {
     for (let txn of txns) {
         if (txn.spent) {
@@ -80,30 +84,57 @@ const addTxnsToDB = async (txns) => {
 
 // get all transactions of user
 const getTxns = async (pubKey) => {
-    const txns = await Txn.find({ pubKey })
+    const txns = await Txn.find({ pubKey, spent: false }).select("-_id")
+    return txns
+}
 
-    // signing all txns
-    const signedTxns = []
-    for (let txn of txns) {
+const getSignedTxn = async (id) => {
+    try {
 
-        let signature = JSON.stringify(txn)
-        tstamp = Date.now().toString()
-        signature += tstamp
+        await Txn.findOneAndUpdate({ id }, { $set: { spent: true } })
+        const txn = await Txn.findOne({ id }).select("-_id")
+
+        let sig_msg = JSON.stringify(txn)
+        let tstamp = Date.now().toString()
+        sig_msg += tstamp
+
 
         let cbdc_prvKey = fs.readFileSync(`${__dirname}/cbdc-keys/privateKey.pem`).toString()
-        signature = crypto.sign('sha256', Buffer.from(signature), cbdc_prvKey).toString('base64')
+        let signature = crypto.sign('sha256', Buffer.from(sig_msg), cbdc_prvKey).toString('base64')
 
-        signedTxns.push({
+        return {
             btxn: txn,
             signature,
             tstamp
-        })
-    }
+        }
 
-    return signedTxns
+    } catch (e) {
+        throw new Error(e)
+    }
 }
 
-// ! currently does not validate signatures
+
+// gets txn from p2p network, adding it back to CBDC
+const addTxnP2C = async (txn) => {
+    let tst = JSON.stringify(txn.btxn);
+    tst += txn.tstamp;
+
+    let data = Buffer.from(tst)
+    const pubKey = fs.readFileSync(`${__dirname}/cbdc-keys/publicKey${txn.id}.pem`, { encoding: 'utf8' })
+    const isValid = crypto.verify('sha256', data, pubKey, Buffer.from(txn.signature, 'base64'))
+    console.log(isValid)
+
+    if (isValid) {
+        const ntxn = new Txn()
+        ntxn.id = v4()
+        ntxn.amount = txn.btxn.amount
+        ntxn.pubKey = txn.btxn.pubKey
+        ntxn.spent = false
+        ntxn.origin = `p2p - ${txn.btxn.id}`     // explicitly stating that the txn came from p2p
+        await ntxn.save();
+    }
+}
+
 const spendTxns = async (txn) => {
     const txns = []
 
@@ -151,10 +182,23 @@ const spendTxns = async (txn) => {
     await addTxnsToDB(txns)
 }
 
+const isTxnValidInTxnDB = async (txn) => {
+    const txns = await Txn.find({ id: txn.id, pubKey: txn.pubKey })
+
+    if (txns.length == 1 && txns[0].spent == true) {
+        return false
+    } else {
+        return txns.length == 1 ? true : undefined
+    }
+}
+
 
 module.exports = {
     connectToDB,
     addTxnsToDB,
     getTxns,
-    spendTxns
+    spendTxns,
+    isTxnValidInTxnDB,
+    getSignedTxn,
+    addTxnP2C,
 }

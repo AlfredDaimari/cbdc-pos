@@ -42,7 +42,7 @@ const { isTxnValidInTxnDB, addToBlockChainDB, getLastBlock } = require("./connec
 
 // === init peer === //
 
-const CURRENT_PHASE = {
+var CURRENT_PHASE = {
     phase: "INIT",
     block: {},
     bkCrt: undefined,
@@ -68,10 +68,15 @@ const getUTCString = () => {
 const propagateTxn = async (txn) => {
     txn["id"] = v4()        // creating an id for the transaction
 
+
+    const axPostReqs = []
     // now propagating the txn through the peer network
     for (let peer of NETWORK_PEERS) {
-        await axios.post(`http://localhost:${peer}/txn`, txn)
+        axPostReqs.push(axios.post(`http://localhost:${peer}/txn`, txn))
     }
+
+    await axios.all(axPostReqs)
+
     console.log(`propaged txn through network ${JSON.stringify(txn)} -- ${getUTCString()}`)
 
     return txn
@@ -279,6 +284,7 @@ class Vote {
     #setupVotePhaseInterval() {
 
         // setup sending out stakes
+
         setTimeout(() => {
 
             this.#sendOutStake()
@@ -311,6 +317,7 @@ class Vote {
             }, 5 * 1000 * 60)
 
         }, 30 * 1000)
+
     }
 
     /**
@@ -351,6 +358,10 @@ class Pool {
 
     // remove transactions that have been validated
     static updatePoolTXNS() {
+        console.log("=== in removing transactions phase ===")
+        console.log(`\nall pooled txns -- ${JSON.stringify(CURRENT_PHASE.poold_TXNS)}`)
+        console.log(`\nall transactions -- ${JSON.stringify(this.TXNS)}`)
+
         this.TXNS = this.TXNS.filter(txn => {
             let ind = CURRENT_PHASE.poold_TXNS.indexOf(ptxn => {
                 txn.id == ptxn.id
@@ -382,7 +393,7 @@ class Pool {
 
                     // first pushing owner's remaining share
                     finalTxns.push({
-                        id: acmTxns[i].id,
+                        id: acmTxns[i]["id"],
                         origin: txn.btxn.id,
                         amount: txn.btxn.amount - txn.amount,
                         pubKey: txn.btxn.pubKey,
@@ -392,7 +403,7 @@ class Pool {
 
                     // pushing the receiver's share
                     finalTxns.push({
-                        id: acmTxns[i].id,
+                        id: acmTxns[i]["id"],
                         origin: txn.btxn.id,
                         amount: txn.amount,
                         pubKey: txn.rpubKey,
@@ -438,33 +449,19 @@ class Pool {
         for (let txn of txns) {
 
             let og_txn = txn["btxn"]
+
             let tst = JSON.stringify(og_txn)
-            tst += txn.tstamp
-
-            let data = Buffer.from(tst)
-
-            tst = JSON.stringify(og_txn)
             tst += txn.rpubKey
             tst += txn.amount.toString()
 
-            let data2 = Buffer.from(tst)
+            let data = Buffer.from(tst)
 
-            const isValidUsr = crypto.verify("SHA256", data2, og_txn["pubKey"], Buffer.from(txn["signature2"], 'base64'))
-            const isValidDB = await isTxnValidInTxnDB(og_txn.id)
+            const isValidUsr = crypto.verify("sha256", data, og_txn["pubKey"], Buffer.from(txn["signature"], 'base64'))
+            const isValidDB = await isTxnValidInTxnDB(og_txn)
 
             // txn is in the db, txn is not spent
             if (isValidDB && txn.btxn.amount >= txn.amount && isValidUsr) {
                 continue
-            }
-
-            // txn not in db, but txn signed by CBDC
-            if (isValidDB === undefined && !txn.btxn.spent && txn.btxn.amount >= txn.amount && isValidUsr) {
-
-                let isValidCBDC = crypto.verify("SHA256", data, CBDC_PUB, Buffer.from(txn["signature"], 'base64'))
-
-                if (isValidCBDC) {
-                    continue
-                }
             }
 
             check = false
@@ -507,35 +504,20 @@ class Pool {
 
                 let txn = txns.shift()
                 let og_txn = txn["btxn"]
+
                 let tst = JSON.stringify(og_txn)
-                tst += txn.tstamp
-
-                let data = Buffer.from(tst)
-
-                tst = JSON.stringify(og_txn)
                 tst += txn.rpubKey
                 tst += txn.amount.toString()
 
-                let data2 = Buffer.from(tst)
+                let data = Buffer.from(tst)
 
-                const isValidUsr = crypto.verify("SHA256", data2, og_txn["pubKey"], Buffer.from(txn["signature2"], 'base64'))
-                const isValidDB = await isTxnValidInTxnDB(og_txn.id)
+                const isValidUsr = crypto.verify("sha256", data, og_txn["pubKey"], Buffer.from(txn["signature"], 'base64'))
+                const isValidDB = await isTxnValidInTxnDB(og_txn)
 
                 // txn is in the db, txn is not spent
-                if (isValidDB && txn.btxn.amount >= txn.amount && isValidUsr) {
+                if (isValidDB && parseInt(txn.btxn.amount) >= parseInt(txn.amount) && isValidUsr) {
                     newPool.push(txn)
                     i += 1
-                }
-
-                // txn not in db, but txn signed by CBDC
-                if (isValidDB === undefined && !txn.btxn.spent && txn.btxn.amount >= txn.amount && isValidUsr) {
-
-                    let isValidCBDC = crypto.verify("SHA256", data, CBDC_PUB, Buffer.from(txn["signature"], 'base64'))
-
-                    if (isValidCBDC) {
-                        newPool.push(txn)
-                        i += 1
-                    }
                 }
 
             }
@@ -555,7 +537,14 @@ class Pool {
 
             if (txn.btxn.amount > txn.amount) {
 
-                // first pushing owner's remaining share
+
+                finalTxns.push({
+                    ...txn.btxn,
+                    spent: true
+                })
+
+
+                // pushing owner's remaining share
                 finalTxns.push({
                     id: v4(),
                     origin: txn.btxn.id,
@@ -666,6 +655,7 @@ class Pool {
 
     #setupPoolPhaseInterval() {
         // setup pooling txns
+
         setTimeout(() => {
 
             this.#poolTransactions()
@@ -751,6 +741,7 @@ class Validate {
      * 
      */
     addToBlockSnts(vote) {
+
         console.log(`received block vote -- ${JSON.stringify(vote)} -- ${getUTCString()}`)
         const voter_pubKey = fs.readFileSync(`${__dirname}/${PEER_ID}/publicKey${vote.id}.pem`)
         const data = vote.id.toString() + CURRENT_PHASE.block.hash + "yes"
@@ -851,6 +842,7 @@ class Validate {
 
     #setupValidatePhaseInterval() {
 
+
         setTimeout(() => {
 
             this.#validateBlockTransactions()
@@ -887,6 +879,7 @@ class Validate {
             }, 5 * 60 * 1000)
 
         }, 44 * 1000 + 120000)
+
     }
 
     init(time) {
@@ -967,12 +960,27 @@ class Commit {
             await addToBlockChainDB(CURRENT_PHASE.block)
             console.log(`Added to the blockchain ${JSON.stringify(CURRENT_PHASE.block)} -- ${getUTCString()}`)
 
+            Pool.updatePoolTXNS()   // remove transactions from commit
+
+            // resetting current phase
+
+            CURRENT_PHASE = {
+                phase: "INIT",
+                block: {},
+                bkCrt: undefined,
+                bkVfRes: false,
+                stakers: 0,
+                poold_TXNS: []
+            }
+
+
         } catch (e) {
             console.log(e)
         }
     }
 
     #setupCommitPhaseInterval() {
+
         setTimeout(() => {
 
             this.#verifyBlockSigns()

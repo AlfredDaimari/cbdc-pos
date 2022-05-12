@@ -19,8 +19,7 @@ let txns = [{
     btxn,
     amount,
     rpubKey,
-    signature: "",
-    signature2: crypto.sign('sha256', Buffer.from(JSON.stringify(btxn) + rpubKey + amount.toString()), fs.readFileSync(`${__dirname}/wallet/privateKeyus1.pem`)).toString('base64'),
+    signature: crypto.sign('sha256', Buffer.from(JSON.stringify(btxn) + rpubKey + amount.toString()), fs.readFileSync(`${__dirname}/wallet/privateKeyus1.pem`)).toString('base64'),
 }]
 
 

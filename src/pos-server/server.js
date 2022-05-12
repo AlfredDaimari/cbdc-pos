@@ -2,9 +2,10 @@ const express = require('express');
 const app = express()
 const cors = require('cors')
 const fs = require('fs')
+const axios = require('axios')
 
 const { Vote, Pool, Validate, Commit, utility } = require('./peer')
-const { connectToDB, getBlocksFromH, getTxns } = require('./connectDB')
+const { connectToDB, getBlocksFromH, getTxns, getLast10Blocks, saveCTxnToP2P, txnP2P_TO_C } = require('./connectDB');
 
 
 app.use(cors())
@@ -27,13 +28,49 @@ let commit_ = new Commit(PUB_KEY, PRV_KEY)
  * !
  */
 
+// to move token or coin from central CBDC to p2p
+
+app.post('/txn/c2p/:nid', async (req, res) => {
+    try {
+        await saveCTxnToP2P(req.body, req.params["nid"])
+        res.status(200).send()
+
+    } catch (e) {
+        console.log(e)
+        res.status(400).send()
+    }
+})
+
+// !(not secure (not dependent on signature)) to move token form p2p to CBDC
+
+app.post('/txn/p2c/:id/:send', async (req, res) => {
+    try {
+        const txn = await txnP2P_TO_C(req.params["id"])
+
+        console.log(`moving txns ${JSON.stringify(txn)}-- -- ${utility.getUTCString()} to CBDC`)
+
+        // send back to cbdc to convert p2p money to cbdc
+        if (req.params["send"] == "yes") {
+            await axios.post('http://localhost:3000/txn/p2cnt', txn)
+        }
+
+        res.status(200).send()
+
+    } catch (e) {
+        console.log(e)
+        res.status(400).send()
+    }
+})
+
+
 app.post('/txns/get', async (req, res) => {
     try {
         const txns = await getTxns(req.body.pubKey)
         res.status(200).send(txns)
+
     } catch (e) {
         console.log(e)
-        res.status(200).send(txns)
+        res.status(200).send()
     }
 })
 
@@ -69,7 +106,22 @@ app.post('/txn', (req, res) => {
     }
 })
 
-// will be used by CBDC to get block information
+// get last 10 blocks -- for frontend
+app.get('/blocklst', async (_, res) => {
+    try {
+
+        const block = await getLast10Blocks()
+        res.status(200).send(block)
+
+    } catch (e) {
+
+        console.log(e)
+        res.status(400).send()
+    }
+})
+
+
+// will be used to get block information
 app.get('/block/:lstbk', async (req, res) => {
     try {
         const blocks = await getBlocksFromH(req.params["lstbk"])
